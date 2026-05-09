@@ -1,4 +1,3 @@
-#四月初基于原代码在尽可能少修改的前提下重写的代码
 import numpy as np
 import torch
 import pypose as pp
@@ -37,19 +36,6 @@ class Sim3LoopOptimizer:
 
         if not cpp_version:
             self.solve_system_version = 'python'
-
-        # 增量式图结构
-        self.sequential_transforms = []
-        self.loop_constraints = []
-        self.last_optimized_poses = None  # 兼容旧接口，不再使用
-        self.last_Ginv = None  # ⭐真正的warm start变量
-        self.last_lambda = None
-
-    def add_sequential(self, s, R, t):
-        self.sequential_transforms.append((s, R, t))
-
-    def add_loop(self, i, j, s, R, t):
-        self.loop_constraints.append((i, j, (s, R, t)))
     
     def numpy_to_pypose_sim3(self, s: float, R_mat: np.ndarray, t_vec: np.ndarray) -> pp.Sim3:
         """Convert numpy s,R,t to pypose Sim3"""
@@ -132,9 +118,6 @@ class Sim3LoopOptimizer:
     
     def residual(self, Ginv, input_poses, dSloop, ii, jj, jacobian=False):
         """Compute residuals (modified from original code)"""
-        #1.计算相邻帧的变换约束
-        #2.获取回环约束
-        #3.计算当前的位姿估计和约束之间的残差
         def _residual(C, Gi, Gj):
             out = C @ pp.Exp(Gi) @ pp.Exp(Gj).Inv()
             return out.Log().tensor()
@@ -182,57 +165,54 @@ class Sim3LoopOptimizer:
         
         return resid, (J_Ginv_i, J_Ginv_j, iii, jjj)
     
-    def optimize(self, max_iterations: int = None, lambda_init: float = None) -> list:
+    def optimize(self, 
+                sequential_transforms: List[Tuple[float, np.ndarray, np.ndarray]],
+                loop_constraints: List[Tuple[int, int, Tuple[float, np.ndarray, np.ndarray]]],
+                max_iterations: int = None,
+                lambda_init: float = None) -> List[Tuple[float, np.ndarray, np.ndarray]]:
         """
-        增量式全局优化，自动使用warm start（真正缓存Ginv和lambda）。
+        Main optimization function
+        
+        Args:
+            sequential_transforms: Input sequence of transforms
+            loop_constraints: List of loop closure constraints
+            max_iterations: Maximum iterations
+            lambda_init: Initial lambda for L-M algorithm
+        
+        Returns:
+            Optimized sequence of transforms
         """
         if max_iterations is None:
             max_iterations = self.config['Loop']['SIM3_Optimizer']['max_iterations']
         if lambda_init is None:
             lambda_init = eval(self.config['Loop']['SIM3_Optimizer']['lambda_init'])
 
-        input_poses = self.sequential_to_absolute_poses(self.sequential_transforms)
-
-        # ⭐ Ginv warm start
-        if self.last_Ginv is None:
-            Ginv = pp.Sim3(input_poses).Inv().Log()
-        else:
-            Ginv = self.last_Ginv.clone()
-            old_n = Ginv.shape[0]
-            new_n = input_poses.shape[0]
-            if new_n > old_n:
-                # 只初始化新部分
-                new_part = pp.Sim3(input_poses[old_n:]).Inv().Log()
-                Ginv = torch.cat([Ginv, new_part], dim=0)
-
-        # ⭐ lambda warm start
-        if self.last_lambda is None:
-            lmbda = lambda_init
-        else:
-            lmbda = self.last_lambda
-
-        dSloop, ii_loop, jj_loop = self.build_loop_constraints(self.loop_constraints)
-
-        if len(self.loop_constraints) == 0:
+        input_poses = self.sequential_to_absolute_poses(sequential_transforms)
+        
+        dSloop, ii_loop, jj_loop = self.build_loop_constraints(loop_constraints)
+        
+        if len(loop_constraints) == 0:
             print("Warning: No loop constraints provided, returning original transforms")
-            return self.sequential_transforms
-
+            return sequential_transforms
+        
+        Ginv = pp.Sim3(input_poses).Inv().Log()
+        lmbda = lambda_init
         residual_history = []
-
-        print(f"Starting optimization with {len(self.sequential_transforms)} poses and {len(self.loop_constraints)} loop constraints")
-
+        
+        print(f"Starting optimization with {len(sequential_transforms)} poses and {len(loop_constraints)} loop constraints")
+        
         # L-M loop
         for itr in range(max_iterations):
             resid, (J_Ginv_i, J_Ginv_j, iii, jjj) = self.residual(
                 Ginv, input_poses, dSloop, ii_loop, jj_loop, jacobian=True)
-
+            
             if resid.numel() == 0:
                 print("No residuals to optimize")
                 break
-
+                
             current_cost = resid.square().mean().item()
             residual_history.append(current_cost)
-
+            
             try: # Solve linear system
                 begin_time = time.time()
                 if self.solve_system_version == 'cpp':
@@ -247,12 +227,12 @@ class Sim3LoopOptimizer:
             except Exception as e:
                 print(f"Solver failed at iteration {itr}: {e}")
                 break
-
+            
             Ginv_tmp = Ginv + delta_pose
-
+            
             new_resid = self.residual(Ginv_tmp, input_poses, dSloop, ii_loop, jj_loop)
             new_cost = new_resid.square().mean().item() if new_resid.numel() > 0 else float('inf')
-
+            
             # L-M
             if new_cost < current_cost:
                 Ginv = Ginv_tmp
@@ -260,8 +240,8 @@ class Sim3LoopOptimizer:
                 print(f"Iteration {itr}: cost {current_cost:.14f} -> {new_cost:.14f} (accepted)", end=' | ')
             else:
                 lmbda *= 2
-                print(f"Iteration {itr}: cost {current_cost:.14f} -> {new_cost:.14f} (rej)     ", end=' | ')
-
+                print(f"Iteration {itr}: cost {current_cost:.14f} -> {new_cost:.14f} (rej)     ", end=' | ') # more readible to accepted
+            
             print(f'Time of solver ({self.solve_system_version}): {(end_time - begin_time)*1000:.4f} ms')
 
             if (current_cost < 1e-5) and (itr >= 4):
@@ -270,14 +250,13 @@ class Sim3LoopOptimizer:
                     if improvement_ratio < 1.5:
                         print(f"Converged at iteration {itr}")
                         break
-
+        
         optimized_absolute_poses = pp.Exp(Ginv).Inv()
-        self.last_Ginv = Ginv.detach()  # ⭐保存Ginv
-        self.last_lambda = lmbda
+        
         optimized_sequential = self.absolute_to_sequential_transforms(optimized_absolute_poses)
-
+        
         print(f"Optimization completed. Final cost: {residual_history[-1] if residual_history else 'N/A'}")
-
+        
         return optimized_sequential
 
 

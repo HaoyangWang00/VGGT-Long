@@ -6,7 +6,8 @@ Weights:
   Map: 'facebook/map-anything'    # Other options: 'facebook/map-anything-apache' or 'facebook/map-anything-v1' or 'facebook/map-anything-apache-v1'
 
 Model:
-  chunk_size: 60
+  stream_optimize_every: 5
+  chunk_size: 60    #4.24，为了适应kitti改成了75，原本是60
   overlap: 30
   loop_chunk_size: 20 # imgs of loop chunk = 2 * loop_chunk_size
   loop_enable: True
@@ -18,7 +19,7 @@ Model:
   # If reference_frame_mid == True, use the middle frame within the chunk as the
   # reference frame to alleviate the scale drift when loop closure is not available.
   # Disable it for now cuz i found some bugs related to this feature [by deng on 09 Oct].
-  calib: False # only mapanything; get k from kitti for input
+  calib: False # only mapanything; get k from kitti for input 4.24改成True了原本是False
   h: 720 # input h
   w: 1280 # input w
 

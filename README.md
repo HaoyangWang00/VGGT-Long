@@ -1,3 +1,21 @@
+CUDA_VISIBLE_DEVICES=1 python vggt_long.py --image_dir /home/haoyang22/project/VGGT-Long/dataset/vins_2025-12-25_15-31-30/images --config ./configs/map_long_config.yaml
+
+
+CUDA_VISIBLE_DEVICES=0 \
+python vggt_long_lkl.py \
+--image_dir ./http_server/received_images \
+--config ./configs/map_long_config.yaml
+
+
+
+
+
+
+
+
+
+
+
 <p align="center">
 <p align="center">
 <h1 align="center">VGGT-Long: Chunk it, Loop it, Align it, Pushing VGGT's Limits on Kilometer-scale Long RGB Sequences</h1>

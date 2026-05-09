@@ -3,7 +3,7 @@
 mkdir weights
 cd ./weights
 
-# SALAD (~ 350 MiB)
+SALAD (~ 350 MiB)
 echo "Downloading SALAD weights..."
 SALAD_URL="https://github.com/serizba/salad/releases/download/v1.0.0/dino_salad.ckpt"
 curl -L "$SALAD_URL" -o "./dino_salad.ckpt"

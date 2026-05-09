@@ -533,7 +533,7 @@ def merge_ply_files(input_dir, output_path):
     - output_path: Output file path (e.g., 'combined.ply')
     """
 
-    input_files = sorted(glob.glob(os.path.join(input_dir, '*_pcd.ply')))
+    input_files = sorted(glob.glob(os.path.join(input_dir, 'chunk_*.ply')))
     
     if not input_files:
         print("No PLY files found")
@@ -919,9 +919,9 @@ def warmup_numba():
 
 def weighted_align_point_maps(point_map1, conf1, point_map2, conf2, mask, conf_threshold, config):
     """ point_map2 -> point_map1"""
-    b1, _, _, _ = point_map1.shape
-    b2, _, _, _ = point_map2.shape
-    b = min(b1, b2)
+    b1, _, _, _ = point_map1.shape #地图1的batch size
+    b2, _, _, _ = point_map2.shape #地图2的batch size
+    b = min(b1, b2) #取小
     
     aligned_points1 = []
     aligned_points2 = []
@@ -929,23 +929,23 @@ def weighted_align_point_maps(point_map1, conf1, point_map2, conf2, mask, conf_t
 
     for i in range(b):
         mask1 = conf1[i] > conf_threshold
-        mask2 = conf2[i] > conf_threshold
-        valid_mask = mask1 & mask2
-        if mask is not None:
+        mask2 = conf2[i] > conf_threshold #置信度低的点全过滤掉
+        valid_mask = mask1 & mask2  #要在两个图中都满足高置信度的点才保留
+        if mask is not None:  #被掩码过滤掉的点也要剔除
             valid_mask =valid_mask & mask[i].squeeze()
 
-        idx = np.where(valid_mask)
-        if len(idx[0]) == 0:
+        idx = np.where(valid_mask) #找到满足条件的点的索引
+        if len(idx[0]) == 0: 
             continue
 
-        pts1 = point_map1[i][idx]
-        pts2 = point_map2[i][idx]
+        pts1 = point_map1[i][idx] #根据索引找到对应的点坐标
+        pts2 = point_map2[i][idx] #这个地方可以理解为i是第几帧，idx是在这一帧的某个位置的像素
 
-        combined_conf = np.sqrt(conf1[i][idx] * conf2[i][idx])
+        combined_conf = np.sqrt(conf1[i][idx] * conf2[i][idx]) #计算两个图中对应点的置信度的几何平均，作为权重
         
-        aligned_points1.append(pts1)
+        aligned_points1.append(pts1) #把满足条件的点坐标和权重保存到列表中
         aligned_points2.append(pts2)
-        confidence_weights.append(combined_conf)
+        confidence_weights.append(combined_conf) #把置信度权重保存到列表中
 
     if len(aligned_points1) == 0:
         raise ValueError("No matching point pairs were found!")
@@ -953,17 +953,18 @@ def weighted_align_point_maps(point_map1, conf1, point_map2, conf2, mask, conf_t
     all_pts1 = np.concatenate(aligned_points1, axis=0)
     all_pts2 = np.concatenate(aligned_points2, axis=0)
     all_weights = np.concatenate(confidence_weights, axis=0)
-
+    #拼成一个大数组，所有满足条件的点坐标和权重都在里面了
     print(f"The number of corresponding points matched: {all_pts1.shape[0]}")
     
+    #求sim3变换矩阵，使用迭代重加权的方式来求解，迭代过程中会根据残差更新权重，增加鲁棒性
     if config['Model']['align_method'] == 'numba':
         s, R, t = robust_weighted_estimate_sim3_numba(all_pts2, 
                                                 all_pts1, 
                                                 all_weights,
-                                                delta=config['Model']['IRLS']['delta'],
-                                                max_iters=config['Model']['IRLS']['max_iters'],
-                                                tol=eval(config['Model']['IRLS']['tol']),
-                                                using_sim3=config['Model']['using_sim3']
+                                                delta=config['Model']['IRLS']['delta'], #huber损失函数的参数，控制残差多大时开始线性惩罚
+                                                max_iters=config['Model']['IRLS']['max_iters'], #最大迭代次数
+                                                tol=eval(config['Model']['IRLS']['tol']), #迭代收敛的容忍度，参数变化小于这个值就认为收敛了
+                                                using_sim3=config['Model']['using_sim3'] #是否使用sim3变换，如果为False则只求解se3变换（不包含缩放）
                                                 )
     else: # numpy
         s, R, t = robust_weighted_estimate_sim3(all_pts2, 
